@@ -1,89 +1,299 @@
-# NexusOS MVP - Infrastructure Core (Week 1)
+# 🧠 NexusOS — Cognitive Digital Twin Operating System
 
-This repository contains the initialized, simplified infrastructure configuration for **NexusOS**, a Cognitive Digital Twin Operating System.
-
----
-
-## Prerequisites
-Ensure the following tools are installed on your host system:
-* **Docker** & **Docker Compose**
-* **Python 3.10+** (with `pip` and virtual environment support)
-* **Node.js 18+** & **npm**
+> An AI-powered cognitive memory system that stores, retrieves, reasons over, and resolves contradictions in user knowledge using semantic memory, vector search, and knowledge graphs.
 
 ---
 
-## Database Container Mesh Setup
-To spin up the multi-database cluster (PostgreSQL, Qdrant, and Neo4j):
+## 🚀 Overview
 
-```bash
-# Start all containers in detached mode
-docker compose up -d
+NexusOS is a next-generation Cognitive Digital Twin designed to mimic how human memory works.
 
-# Verify all containers are healthy
-docker compose ps
+The system combines:
+
+* Semantic Memory Storage
+* Vector Embeddings
+* Knowledge Graphs
+* Hybrid Retrieval
+* Contradiction Detection
+* Memory Resolution Workflows
+
+By integrating PostgreSQL, Neo4j, Qdrant, and Local LLMs through Ollama, NexusOS creates a persistent AI memory layer capable of understanding relationships, recalling information, and detecting inconsistencies over time.
+
+---
+
+# 🏗️ Architecture
+
+```text
+User Input
+     │
+     ▼
+Memory Agent
+     │
+     ▼
+Entity Extraction (Ollama)
+     │
+     ▼
+┌─────────────────┐
+│   PostgreSQL    │
+│ Memory Metadata │
+└─────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│     Qdrant      │
+│ Vector Memory   │
+└─────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│      Neo4j      │
+│ Knowledge Graph │
+└─────────────────┘
+     │
+     ▼
+Hybrid Retrieval Engine
+     │
+     ▼
+Contradiction Engine
+     │
+     ▼
+Resolution Engine
 ```
 
-### Exponent Database Endpoints
-* **PostgreSQL**: `localhost:5432` (Username: `postgres`, DB: `nexus_db`)
-* **Neo4j Console**: `http://localhost:7474` (Bolt: `localhost:7687`, Auth: `neo4j/neo4j_secure_password`)
-* **Qdrant Console**: `http://localhost:6333` (gRPC: `localhost:6334`)
+---
+
+# ⚡ Tech Stack
+
+## Backend
+
+* FastAPI
+* Python 3.12
+* AsyncIO
+* HTTPX
+* Pydantic
+
+## Databases
+
+### PostgreSQL
+
+Stores:
+
+* User Metadata
+* Memory Records
+* Recall Logs
+* Contradiction Records
+
+### Neo4j
+
+Stores:
+
+* Knowledge Graph
+* Entity Relationships
+* Memory Connections
+
+### Qdrant
+
+Stores:
+
+* Vector Embeddings
+* Semantic Memory
+* Similarity Search Indexes
+
+## AI Layer
+
+### Ollama
+
+Models:
+
+* nomic-embed-text
+* qwen2.5:1.5b
+* qwen3:8b
+
+Capabilities:
+
+* Embedding Generation
+* Entity Extraction
+* Reasoning
+* Contradiction Analysis
+
+## Frontend
+
+* Next.js 15
+* TypeScript
+* Tailwind CSS
+* shadcn/ui
 
 ---
 
-## FastAPI Backend Setup
+# ✨ Implemented Features
 
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
+### Cognitive Memory Engine
 
-2. Create a python virtual environment:
-   ```bash
-   python -m venv venv
-   ```
+* Store user memories
+* Semantic embedding generation
+* Persistent memory storage
 
-3. Activate the virtual environment:
-   * **Windows (PowerShell)**:
-     ```powershell
-     .\venv\Scripts\Activate.ps1
-     ```
-   * **Linux/macOS**:
-     ```bash
-     source venv/bin/activate
-     ```
+### Knowledge Graph
 
-4. Install the backend package dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+* Automatic entity extraction
+* Relationship generation
+* Neo4j graph construction
 
-5. Run the FastAPI application locally:
-   ```bash
-   uvicorn main:app --reload
-   ```
+### Hybrid Retrieval
 
-The backend API is now running locally at `http://localhost:8000`.
+* Vector similarity search
+* Graph-based retrieval
+* Context enrichment
 
-### Health Diagnostics Endpoint
-Validate database connections by opening `http://localhost:8000/api/v1/health` in your browser. This endpoint runs active check queries across all three databases.
+### Contradiction Detection
+
+* Memory conflict discovery
+* Severity scoring
+* Resolution workflow
+
+### Infrastructure
+
+* Dockerized deployment
+* Multi-database architecture
+* Health monitoring endpoints
 
 ---
 
-## Next.js Frontend Setup
+# 🐳 Infrastructure Setup
 
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
+## Start Database Cluster
 
-2. Install the client packages:
-   ```bash
-   npm install
-   ```
+```bash
+docker compose up -d
+```
 
-3. Start the Next.js local development server:
-   ```bash
-   npm run dev
-   ```
+Verify services:
 
-The client application is now running locally at `http://localhost:3000`.
+```bash
+docker ps
+```
+
+---
+
+## Service Endpoints
+
+### PostgreSQL
+
+```text
+Host: localhost
+Port: 5432
+Database: nexus_db
+Username: postgres
+```
+
+### Neo4j
+
+```text
+Console: http://localhost:7474
+Bolt: localhost:7687
+Username: neo4j
+Password: neo4j_secure_password
+```
+
+### Qdrant
+
+```text
+Dashboard: http://localhost:6333/dashboard
+REST API: localhost:6333
+gRPC: localhost:6334
+```
+
+---
+
+# 🔧 Backend Setup
+
+```bash
+cd backend
+python -m venv venv
+```
+
+### Activate Environment
+
+Windows:
+
+```bash
+venv\Scripts\Activate.ps1
+```
+
+Linux/macOS:
+
+```bash
+source venv/bin/activate
+```
+
+### Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Run Backend
+
+```bash
+python -m uvicorn main:app --reload
+```
+
+Backend URL:
+
+```text
+http://localhost:8000
+```
+
+---
+
+# ❤️ Health Check
+
+Verify all database integrations:
+
+```text
+http://localhost:8000/api/v1/health
+```
+
+Expected checks:
+
+* PostgreSQL Connectivity
+* Neo4j Connectivity
+* Qdrant Connectivity
+
+---
+
+# 🎨 Frontend Setup
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend URL:
+
+```text
+http://localhost:3000
+```
+
+---
+
+# 📈 Project Status
+
+| Module                  | Status         |
+| ----------------------- | -------------- |
+| Infrastructure          | ✅ Complete     |
+| Memory Engine           | ✅ Complete     |
+| Knowledge Graph         | ✅ Complete     |
+| Vector Search           | ✅ Complete     |
+| Hybrid Retrieval        | ✅ Complete     |
+| Contradiction Detection | ✅ Complete     |
+| Frontend Integration    | 🚧 In Progress |
+| Cognitive Dashboard     | 🚧 Planned     |
+| Graph Visualization     | 🚧 Planned     |
+
+---
+
+# 🎯 Vision
+
+NexusOS aims to become a fully-fledged Cognitive Digital Twin capable of remembering, reasoning, learning, and evolving with the user over time through persistent memory and graph-based intelligence.
