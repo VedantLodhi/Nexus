@@ -14,18 +14,24 @@ class ConflictAgent:
         pass
 
     async def verify_dissonance(self, statement_a: str, statement_b: str) -> dict:
-        """Invokes local Ollama JSON API to determine if a logical contradiction exists."""
+        """Invokes local Ollama API to determine if a logical contradiction exists with robust parsing."""
         url = f"{settings.OLLAMA_URL}/api/chat"
         system_instruction = (
-            "Compare Statement A and Statement B and determine if they contain a logical contradiction.\n"
+            "You are a logical contradiction detection engine.\n\n"
+            "Compare Statement A and Statement B and determine if they contain a logical contradiction (either direct or contextual).\n"
+            "A contradiction exists if Statement A and Statement B express mutually exclusive states, goals, preferences, or choices for the same user.\n\n"
+            "Apply these explicit contradiction rules:\n"
+            "1. Career: Desiring mutually exclusive career roles or paths at the same time (e.g., wanting to become a 'Backend Engineer' vs a 'Doctor').\n"
+            "2. Education: Pursuing conflicting full-time academic fields or degrees concurrently (e.g., studying for a 'BTech' vs an 'MBBS').\n"
+            "3. Preferences: Directly conflicting personal or professional preferences (e.g., 'remote' vs 'on-site' work preferences).\n"
+            "4. Technology: Conflicting technology choices or stack preferences for the same scenario (e.g., 'React' vs 'Angular' preference, or 'SQL' vs 'NoSQL' database preferences).\n\n"
             "Categorize the contradiction into: PREFERENCE, TECH_PREFERENCE, GOAL, KNOWLEDGE.\n"
-            "Return ONLY a JSON payload matching this schema:\n"
+            "Return ONLY a JSON payload matching this schema (no markdown formatting, no explanations, no comments):\n"
             "{\n"
             "  \"is_contradiction\": true|false,\n"
             "  \"category\": \"PREFERENCE|TECH_PREFERENCE|GOAL|KNOWLEDGE\",\n"
             "  \"explanation\": \"Brief explanation of the logical conflict\"\n"
-            "}\n"
-            "Do not wrap inside markdown code segments."
+            "}"
         )
         
         payload = {
@@ -34,9 +40,14 @@ class ConflictAgent:
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": f"Statement A: \"{statement_a}\"\nStatement B: \"{statement_b}\""}
             ],
-            "format": "json",
+            "options": {
+                "temperature": 0.0
+            },
             "stream": False
         }
+        
+        # Log the full Ollama payload
+        logger.info(f"Ollama contradiction reasoning request payload:\n{json.dumps(payload, indent=2)}")
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -44,18 +55,53 @@ class ConflictAgent:
                 response.raise_for_status()
                 data = response.json()
                 content = data.get("message", {}).get("content", "")
+                
+                # Log the full raw response
+                logger.info(f"Ollama contradiction reasoning raw response content:\n{content}")
+                
                 if not content:
                     raise ValueError("Ollama response content was empty.")
                 
-                result = json.loads(content)
+                # 1. Strip think blocks if present
+                parsed_text = content
+                if "<think>" in parsed_text:
+                    if "</think>" in parsed_text:
+                        parts = parsed_text.split("</think>", 1)
+                        parsed_text = parts[1]
+                    else:
+                        parts = parsed_text.split("<think>", 1)
+                        parsed_text = parts[0]
+                
+                # 2. Extract JSON substring
+                start_idx = parsed_text.find("{")
+                end_idx = parsed_text.rfind("}")
+                if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
+                    raise ValueError("Could not find JSON object in Ollama response.")
+                
+                json_str = parsed_text[start_idx : end_idx + 1]
+                
+                # Attempt to parse JSON
+                try:
+                    result = json.loads(json_str)
+                except json.JSONDecodeError:
+                    logger.warning("Attempting JSON repair for contradiction response...")
+                    import re
+                    json_str = re.sub(
+                        r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)',
+                        r'\1"\2"\3',
+                        json_str
+                    )
+                    result = json.loads(json_str)
+                
+                logger.info(f"Parsed contradiction decision: {result}")
                 return {
                     "is_contradiction": bool(result.get("is_contradiction", False)),
                     "category": result.get("category", "PREFERENCE"),
                     "explanation": result.get("explanation", "")
                 }
         except Exception as e:
-            logger.error(f"Failed to check contradiction via Ollama: {e}")
-            return {"is_contradiction": False, "category": "PREFERENCE", "explanation": ""}
+            logger.error(f"Failed to check contradiction via Ollama: {e}", exc_info=True)
+            return {"is_contradiction": False, "category": "PREFERENCE", "explanation": f"Error during parsing: {str(e)}"}
 
     def _calculate_severity(self, similarity: float, category: str, centrality: float) -> tuple[float, str]:
         """Calculates severity score and assigns severity classification label."""
@@ -88,6 +134,14 @@ class ConflictAgent:
         query_vector = await get_ollama_embedding(statement)
         vector_hits = await qdrant_db.search_similar_memories(query_vector, limit=5)
         
+        logger.info(f"Retrieved {len(vector_hits)} memories from Qdrant for contradiction detection.")
+        for idx, hit in enumerate(vector_hits):
+            logger.info(
+                f"  Hit [{idx}]: belief_id={hit['belief_id']}, "
+                f"similarity={hit['similarity']:.4f}, "
+                f"statement='{hit['statement']}'"
+            )
+        
         conflict_flagged = False
         for hit in vector_hits:
             target_belief_id = hit["belief_id"]
@@ -96,8 +150,10 @@ class ConflictAgent:
                 
             # Compute cosine similarity
             similarity = hit["similarity"]
-            if similarity < 0.75:
-                continue # Skip if semantic distance is too large
+            # Threshold lowered to 0.60 to capture semantic conflicts in similar context sentences
+            if similarity < 0.60:
+                logger.info(f"Skipping hit '{target_belief_id}' due to low similarity ({similarity:.4f} < 0.60)")
+                continue
                 
             # 2. Invoke LLM validation checks
             dissonance = await self.verify_dissonance(statement, hit["statement"])

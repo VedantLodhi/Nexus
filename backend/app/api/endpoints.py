@@ -2,6 +2,9 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.engine.memory import memory_agent
+from app.engine.conflict import conflict_agent
+from app.db.postgres import postgres_db
+from app.db.neo4j import neo4j_db
 
 logger = logging.getLogger("nexus.endpoints")
 router = APIRouter()
@@ -17,6 +20,7 @@ class StoreMemoryResponse(BaseModel):
     user_id: str
     extracted_entities: dict = Field(default_factory=dict)
     conflict_flagged: bool = Field(default=False)
+    graph_stats: dict = Field(default_factory=dict)
 
 class ResolveContradictionRequest(BaseModel):
     conflict_id: str = Field(..., description="The UUID of the contradiction log/node.")
@@ -53,6 +57,48 @@ class DecayLogResponse(BaseModel):
     statement: str
     timestamp: str
     retrievability: float
+
+# Dashboard Schemas
+from typing import Optional, Any
+
+class DashboardStatsResponse(BaseModel):
+    memories: int
+    projects: int
+    technologies: int
+    careers: int
+    contradictions: int
+
+class DashboardMemoryResponse(BaseModel):
+    belief_id: str
+    statement: str
+    timestamp: str
+    event_type: str
+
+class DashboardNameResponse(BaseModel):
+    name: str
+    id: Optional[str] = None
+    created_at: Optional[Any] = None
+
+class DashboardContradictionResponse(BaseModel):
+    id: str
+    category: str
+    status: str
+    severity: str
+    created_at: Any
+
+class DashboardGraphNode(BaseModel):
+    id: str
+    name: str
+    label: str
+
+class DashboardGraphEdge(BaseModel):
+    source: str
+    target: str
+    type: str
+
+class DashboardGraphResponse(BaseModel):
+    nodes: list[DashboardGraphNode]
+    edges: list[DashboardGraphEdge]
 
 @router.post("/memory/store", response_model=StoreMemoryResponse, tags=["Memory Agent Operations"])
 async def store_memory(payload: StoreMemoryRequest):
@@ -91,7 +137,6 @@ async def get_memory_decay_logs():
 async def resolve_contradiction(payload: ResolveContradictionRequest):
     """Resolves an active contradiction state in Postgres and Neo4j."""
     try:
-        from app.engine.conflict import conflict_agent
         await conflict_agent.resolve_contradiction(
             contradiction_id=payload.conflict_id,
             keep_belief_id=payload.keep_belief_id,
@@ -105,3 +150,81 @@ async def resolve_contradiction(payload: ResolveContradictionRequest):
     except Exception as e:
         logger.error(f"Error in resolve_contradiction API endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to resolve contradiction: {str(e)}")
+
+@router.get("/dashboard/stats", response_model=DashboardStatsResponse, tags=["Dashboard Operations"])
+async def get_dashboard_stats():
+    """Fetches live count statistics from PostgreSQL and Neo4j."""
+    try:
+        memories_count = await postgres_db.get_memories_count()
+        graph_stats = await neo4j_db.get_dashboard_stats()
+        return {
+            "memories": memories_count,
+            "projects": graph_stats.get("projects", 0),
+            "technologies": graph_stats.get("technologies", 0),
+            "careers": graph_stats.get("careers", 0),
+            "contradictions": graph_stats.get("contradictions", 0)
+        }
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_stats API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard stats: {str(e)}")
+
+@router.get("/dashboard/memories", response_model=list[DashboardMemoryResponse], tags=["Dashboard Operations"])
+async def get_dashboard_memories(limit: int = 50):
+    """Fetches the latest memories from PostgreSQL cognitive_events table."""
+    try:
+        results = await postgres_db.get_latest_memories(limit=limit)
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_memories API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard memories: {str(e)}")
+
+@router.get("/dashboard/projects", response_model=list[DashboardNameResponse], tags=["Dashboard Operations"])
+async def get_dashboard_projects():
+    """Queries Neo4j for all Project node names ordered by created_at DESC."""
+    try:
+        results = await neo4j_db.get_all_projects()
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_projects API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard projects: {str(e)}")
+
+@router.get("/dashboard/technologies", response_model=list[DashboardNameResponse], tags=["Dashboard Operations"])
+async def get_dashboard_technologies():
+    """Queries Neo4j for all Technology node names ordered by name."""
+    try:
+        results = await neo4j_db.get_all_technologies()
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_technologies API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard technologies: {str(e)}")
+
+@router.get("/dashboard/careers", response_model=list[DashboardNameResponse], tags=["Dashboard Operations"])
+async def get_dashboard_careers():
+    """Queries Neo4j for all Career node names."""
+    try:
+        results = await neo4j_db.get_all_careers()
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_careers API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard careers: {str(e)}")
+
+@router.get("/dashboard/contradictions", response_model=list[DashboardContradictionResponse], tags=["Dashboard Operations"])
+async def get_dashboard_contradictions():
+    """Queries Neo4j for all Contradiction nodes."""
+    try:
+        results = await neo4j_db.get_all_contradictions()
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_contradictions API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard contradictions: {str(e)}")
+
+@router.get("/dashboard/graph", response_model=DashboardGraphResponse, tags=["Dashboard Operations"])
+async def get_dashboard_graph():
+    """Queries Neo4j for connected nodes and edges in a format suitable for graph rendering."""
+    try:
+        results = await neo4j_db.get_dashboard_graph()
+        return results
+    except Exception as e:
+        logger.error(f"Error in get_dashboard_graph API: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard graph: {str(e)}")
+

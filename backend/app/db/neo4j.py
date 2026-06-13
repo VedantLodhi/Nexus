@@ -91,42 +91,59 @@ class Neo4jManager:
             await session.run(query, user_id=user_id, belief_id=belief_id, statement=statement)
             logger.info(f"Created Memory node '{belief_id}' in Neo4j linked to User '{user_id}'")
 
-    async def create_semantic_entities(self, belief_id: str, nodes: list[dict], relationships: list[dict]):
+    async def create_semantic_entities(self, belief_id: str, nodes: list[dict], relationships: list[dict]) -> dict:
         """Creates extracted nodes and maps relationships linked to the Memory node."""
         if self.driver is None:
             raise RuntimeError("Neo4j driver not initialized.")
+
+        nodes_processed = 0
+        nodes_created_db = 0
+        relationships_processed = 0
+        relationships_created_db = 0
+
+        label_map = {
+            "Language": "Technology",
+            "Framework": "Technology",
+            "Library": "Technology",
+            "Database": "Technology",
+            "Tool": "Technology",
+            "Platform": "Technology",
+
+            "Technology": "Technology",
+            "Project": "Project",
+            "Skill": "Skill",
+            "Career": "Career",
+            "Company": "Company",
+            "Person": "Person",
+            "Concept": "Concept"
+        }
 
         async with self.driver.session() as session:
             # 1. Merge the semantic entities
             for node in nodes:
                 name = node.get("name")
-                label = node.get("label")
-                if not name or not label:
+                raw_label = node.get("label", "Concept")
+                label = label_map.get(raw_label, "Concept")
+
+                if not name:
                     continue
                 
+                # Normalize label to Concept if not in valid ontology values
+                if label not in label_map.values():
+                    logger.warning(f"Label '{label}' is not in valid ontology. Mapping to 'Concept'.")
+                    label = "Concept"
+
                 # Dynamic labels are resolved explicitly to avoid Cypher injection
-                if label == "Project":
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MERGE (e:Project {name: $name})
-                    ON CREATE SET e.id = apoc.create.uuid(), e.created_at = timestamp()
-                    MERGE (m)-[:EXTRACTED_ENTITY]->(e)
-                    """
-                elif label == "Technology":
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MERGE (e:Technology {name: $name})
-                    ON CREATE SET e.id = apoc.create.uuid(), e.created_at = timestamp()
-                    MERGE (m)-[:EXTRACTED_ENTITY]->(e)
-                    """
-                else:
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MERGE (e:Concept {name: $name})
-                    ON CREATE SET e.id = apoc.create.uuid(), e.created_at = timestamp()
-                    MERGE (m)-[:EXTRACTED_ENTITY]->(e)
-                    """
-                await session.run(query, belief_id=belief_id, name=name)
+                query = f"""
+                MATCH (m:Memory {{id: $belief_id}})
+                MERGE (e:{label} {{name: $name}})
+                ON CREATE SET e.id = apoc.create.uuid(), e.created_at = timestamp()
+                MERGE (m)-[:EXTRACTED_ENTITY]->(e)
+                """
+                res = await session.run(query, belief_id=belief_id, name=name)
+                summary = await res.consume()
+                nodes_processed += 1
+                nodes_created_db += summary.counters.nodes_created
 
             # 2. Merge semantic relationships
             for rel in relationships:
@@ -136,32 +153,59 @@ class Neo4jManager:
                 if not source or not target or not rel_type:
                     continue
 
-                if rel_type == "BUILT_WITH":
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MATCH (source {name: $source})<-[:EXTRACTED_ENTITY]-(m)
-                    MATCH (target {name: $target})<-[:EXTRACTED_ENTITY]-(m)
-                    MERGE (source)-[r:BUILT_WITH]->(target)
-                    ON CREATE SET r.confidence = 1.0, r.created_at = timestamp()
-                    """
-                elif rel_type == "USES":
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MATCH (source {name: $source})<-[:EXTRACTED_ENTITY]-(m)
-                    MATCH (target {name: $target})<-[:EXTRACTED_ENTITY]-(m)
-                    MERGE (source)-[r:USES]->(target)
-                    ON CREATE SET r.confidence = 1.0, r.created_at = timestamp()
-                    """
-                else:
-                    query = """
-                    MATCH (m:Memory {id: $belief_id})
-                    MATCH (source {name: $source})<-[:EXTRACTED_ENTITY]-(m)
-                    MATCH (target {name: $target})<-[:EXTRACTED_ENTITY]-(m)
-                    MERGE (source)-[r:RELATED_TO]->(target)
-                    ON CREATE SET r.confidence = 1.0, r.created_at = timestamp()
-                    """
-                await session.run(query, belief_id=belief_id, source=source, target=target)
-        logger.info(f"Entities and relations processed for Memory '{belief_id}' in Neo4j.")
+                # Verify endpoints exist and are linked to the memory node
+                check_query = """
+                MATCH (m:Memory {id: $belief_id})
+                OPTIONAL MATCH (m)-[:EXTRACTED_ENTITY]->(s {name: $source})
+                OPTIONAL MATCH (m)-[:EXTRACTED_ENTITY]->(t {name: $target})
+                RETURN s IS NOT NULL AS source_exists, t IS NOT NULL AS target_exists
+                """
+                check_res = await session.run(check_query, belief_id=belief_id, source=source, target=target)
+                check_record = await check_res.single()
+                
+                source_exists = False
+                target_exists = False
+                if check_record:
+                    source_exists = check_record["source_exists"]
+                    target_exists = check_record["target_exists"]
+
+                if not source_exists or not target_exists:
+                    logger.warning(
+                        f"MISSING ENDPOINTS: Cannot create relationship '{rel_type}' "
+                        f"between '{source}' (exists: {source_exists}) and '{target}' (exists: {target_exists}) "
+                        f"for memory '{belief_id}'."
+                    )
+                    continue
+
+                # Clean and sanitize relationship type to prevent Cypher injection
+                import re
+                clean_rel_type = re.sub(r'[^a-zA-Z0-9_]', '', rel_type).upper()
+                if not clean_rel_type or not clean_rel_type[0].isalpha():
+                    clean_rel_type = "RELATED_TO"
+
+                query = f"""
+                MATCH (m:Memory {{id: $belief_id}})
+                MATCH (source {{name: $source}})<-[:EXTRACTED_ENTITY]-(m)
+                MATCH (target {{name: $target}})<-[:EXTRACTED_ENTITY]-(m)
+                MERGE (source)-[r:{clean_rel_type}]->(target)
+                ON CREATE SET r.confidence = 1.0, r.created_at = timestamp()
+                """
+                res = await session.run(query, belief_id=belief_id, source=source, target=target)
+                summary = await res.consume()
+                relationships_processed += 1
+                relationships_created_db += summary.counters.relationships_created
+
+        logger.info(
+            f"Entities and relations processed for Memory '{belief_id}' in Neo4j. "
+            f"Nodes: {nodes_processed} processed ({nodes_created_db} created in DB). "
+            f"Relationships: {relationships_processed} processed ({relationships_created_db} created in DB)."
+        )
+        return {
+            "nodes_processed": nodes_processed,
+            "nodes_created_db": nodes_created_db,
+            "relationships_processed": relationships_processed,
+            "relationships_created_db": relationships_created_db
+        }
 
     async def delete_memory_nodes(self, belief_id: str):
         """Detaches and deletes the parent Memory node during transaction rollback."""
@@ -198,12 +242,12 @@ class Neo4jManager:
         return results
 
     async def get_concept_centrality(self, concept_id: str) -> float:
-        """Returns normalized degree centrality of a concept node in the graph."""
+        """Returns normalized degree centrality of any node in the graph."""
         if self.driver is None:
             raise RuntimeError("Neo4j driver not initialized.")
 
         query = """
-        MATCH (c:Concept {id: $concept_id})
+        MATCH (c {id: $concept_id})
         OPTIONAL MATCH (c)-[r]-()
         RETURN count(r) AS degree
         """
@@ -218,6 +262,20 @@ class Neo4jManager:
                 import math
                 return float(1.0 / (1.0 + math.exp(-degree / 2.0)) - 0.5) * 2.0
             return 0.0
+
+    async def update_memory_access(self, belief_id: str, user_id: str):
+        """Reinforces recall confidence and updates last_accessed timestamp for an existing memory in Neo4j."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+
+        query = """
+        MATCH (u:User {id: $user_id})-[r:RECALLS]->(m:Memory {id: $belief_id})
+        SET r.last_accessed = timestamp(),
+            r.confidence = CASE WHEN r.confidence + 0.1 > 1.0 THEN 1.0 ELSE r.confidence + 0.1 END
+        """
+        async with self.driver.session() as session:
+            await session.run(query, user_id=user_id, belief_id=belief_id)
+            logger.info(f"Reinforced recall confidence and timestamp for Memory node '{belief_id}' in Neo4j.")
 
     async def retrieve_memory_graph_context(self, belief_ids: list[str]) -> dict[str, dict]:
         """Traverses the Memory-Centric Graph layer to return primary entities and connected neighbors."""
@@ -321,7 +379,162 @@ class Neo4jManager:
             )
             logger.info(f"Resolved contradiction graph: {contradiction_id}")
 
+    async def get_all_projects(self) -> list[dict]:
+        """Queries Neo4j for all Project nodes ordered by created_at DESC."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (p:Project)
+        RETURN p.name AS name, p.id AS id, p.created_at AS created_at
+        ORDER BY p.created_at DESC
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            return [
+                {
+                    "name": record["name"],
+                    "id": record["id"],
+                    "created_at": record["created_at"]
+                }
+                async for record in result
+            ]
+
+    async def get_all_technologies(self) -> list[dict]:
+        """Queries Neo4j for all Technology nodes ordered by name."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (t:Technology)
+        RETURN t.name AS name, t.id AS id
+        ORDER BY t.name
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            return [
+                {
+                    "name": record["name"],
+                    "id": record["id"]
+                }
+                async for record in result
+            ]
+
+    async def get_all_careers(self) -> list[dict]:
+        """Queries Neo4j for all Career nodes ordered by name."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (c:Career)
+        RETURN c.name AS name, c.id AS id
+        ORDER BY c.name
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            return [
+                {
+                    "name": record["name"],
+                    "id": record["id"]
+                }
+                async for record in result
+            ]
+
+    async def get_all_contradictions(self) -> list[dict]:
+        """Queries Neo4j for all Contradiction nodes ordered by created_at DESC."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (c:Contradiction)
+        RETURN c.id AS id, c.category AS category, c.status AS status, c.severity AS severity, c.created_at AS created_at
+        ORDER BY c.created_at DESC
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            return [
+                {
+                    "id": record["id"],
+                    "category": record["category"],
+                    "status": record["status"],
+                    "severity": record["severity"],
+                    "created_at": record["created_at"]
+                }
+                async for record in result
+            ]
+
+    async def get_dashboard_graph(self) -> dict:
+        """Queries Neo4j for connected nodes and edges in a format suitable for graph rendering."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (n)-[r]->(m)
+        RETURN n, r, m
+        """
+        nodes_map = {}
+        edges = []
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            async for record in result:
+                n = record["n"]
+                m = record["m"]
+                r = record["r"]
+
+                n_id = n.get("id") or n.get("name") or str(n.element_id)
+                n_name = n.get("name") or n.get("statement") or n_id
+                n_labels = list(n.labels)
+                n_label = n_labels[0] if n_labels else "Concept"
+
+                m_id = m.get("id") or m.get("name") or str(m.element_id)
+                m_name = m.get("name") or m.get("statement") or m_id
+                m_labels = list(m.labels)
+                m_label = m_labels[0] if m_labels else "Concept"
+
+                nodes_map[n_id] = {
+                    "id": n_id,
+                    "name": n_name,
+                    "label": n_label
+                }
+                nodes_map[m_id] = {
+                    "id": m_id,
+                    "name": m_name,
+                    "label": m_label
+                }
+
+                edges.append({
+                    "source": n_id,
+                    "target": m_id,
+                    "type": r.type
+                })
+
+        return {
+            "nodes": list(nodes_map.values()),
+            "edges": edges
+        }
+
+    async def get_dashboard_stats(self) -> dict:
+        """Returns counts for Project, Technology, Career, and Contradiction nodes in Neo4j."""
+        if self.driver is None:
+            raise RuntimeError("Neo4j driver not initialized.")
+        query = """
+        MATCH (p:Project) WITH count(p) AS projects
+        MATCH (t:Technology) WITH projects, count(t) AS technologies
+        MATCH (c:Career) WITH projects, technologies, count(c) AS careers
+        MATCH (cr:Contradiction)
+        RETURN projects, technologies, careers, count(cr) AS contradictions
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query)
+            record = await result.single()
+            if record:
+                return {
+                    "projects": record["projects"],
+                    "technologies": record["technologies"],
+                    "careers": record["careers"],
+                    "contradictions": record["contradictions"]
+                }
+            return {
+                "projects": 0,
+                "technologies": 0,
+                "careers": 0,
+                "contradictions": 0
+            }
+
 # Singleton instance
 neo4j_db = Neo4jManager()
-
-

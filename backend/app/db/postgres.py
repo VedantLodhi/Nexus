@@ -211,9 +211,38 @@ class PostgresManager:
             )
             logger.info(f"Updated PostgreSQL contradiction log '{contradiction_id}' to RESOLVED.")
 
+    async def get_latest_memories(self, limit: int = 50) -> list[dict]:
+        """Fetches the latest memories from PostgreSQL cognitive_events table."""
+        if self.pool is None:
+            raise RuntimeError("Postgres connection pool not initialized.")
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, statement, timestamp, event_type
+                FROM cognitive_events
+                ORDER BY timestamp DESC
+                LIMIT $1
+                """,
+                limit
+            )
+            return [
+                {
+                    "belief_id": str(row["id"]),
+                    "statement": row["statement"],
+                    "timestamp": row["timestamp"].isoformat(),
+                    "event_type": row["event_type"]
+                }
+                for row in rows
+            ]
+
+    async def get_memories_count(self) -> int:
+        """Returns the total number of memories stored in PostgreSQL."""
+        if self.pool is None:
+            raise RuntimeError("Postgres connection pool not initialized.")
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM cognitive_events")
+
 # Singleton instance
 postgres_db = PostgresManager()
-
-
-
 
